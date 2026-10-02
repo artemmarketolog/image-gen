@@ -1,0 +1,27 @@
+# Credentials and private user data
+.env
+.env.*
+!.env.example
+*.env
+credentials/
+*token*.json
+voices.json
+*.pem
+*.key
+# Local installs and generated output
+.venv/
+node_modules/
+__pycache__/
+*.pyc
+.cache/
+state/
+logs/
+output/
+work/
+projects/
+*.log
+ledger*.jsonl
+edits.jsonl
+review.json
+.motion-skill
+.DS_Store

@@ -1,0 +1,6 @@
+interface:
+  display_name: "Image gen"
+  short_description: "Картинки через GPT Image 2.5: генерация, правка по референсу, пакеты, видео из картинки"
+  default_prompt: "Используй $image-gen, чтобы сгенерировать или поправить изображение: перепиши промпт, сгенерируй, проверь глазами и отдай файл."
+policy:
+  allow_implicit_invocation: true
