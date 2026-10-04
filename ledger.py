@@ -32,7 +32,8 @@ def _write_line(entry: dict) -> None:
 
 
 def log_started(job_id: str, prompt: str, model: str, ratio: str, name: str, cost: float, **fields) -> None:
-    """Записать ДО отправки запроса. fields: size, quality, refs, project, requested_model."""
+    """Записать ДО отправки запроса. fields: size, quality, refs, project, requested_model, provider.
+    У OpenAI cost здесь оценка, факт пишет log_billed."""
     _write_line({
         "job_id": job_id,
         "status": "started",
@@ -66,6 +67,19 @@ def log_failed(job_id: str, error: str, billed: bool) -> None:
     })
 
 
+def log_billed(job_id: str, provider: str, model: str, usage: dict, cost_usd: float) -> None:
+    """Фактическое списание по токенам (OpenAI): usage из ответа и цена в долларах."""
+    _write_line({
+        "job_id": job_id,
+        "status": "billed",
+        "provider": provider,
+        "model": model,
+        "usage": usage,
+        "cost_usd": round(cost_usd, 5),
+        "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
+    })
+
+
 def prompts_md_path(project: str | None) -> Path:
     if project:
         return CREATIVES_DIR / project / "prompts.md"
@@ -76,15 +90,18 @@ def log_prompt_md(
     *, name: str, prompt: str, model: str, size: str, ratio: str, status: str,
     output: str | None = None, quality: str | None = None, refs: list[str] | None = None,
     project: str | None = None, elapsed: float | None = None, error: str | None = None,
+    provider: str | None = None, cost: float | None = None,
 ) -> Path:
     """Дописать одну генерацию в Markdown-журнал промптов. Возвращает путь к файлу."""
     path = prompts_md_path(project)
     path.parent.mkdir(parents=True, exist_ok=True)
-    meta = [model, f"{size} ({ratio})"]
+    meta = [f"openai/{model}" if provider == "openai" else model, f"{size} ({ratio})"]
     if quality:
         meta.append(f"quality {quality}")
     if elapsed is not None:
         meta.append(f"{elapsed:.0f} с")
+    if cost is not None:
+        meta.append(f"${cost:.3f}")
     lines = [f"### {time.strftime('%Y-%m-%d %H:%M')} · {name} · {status}", "", "- " + " · ".join(meta)]
     if refs:
         lines.append("- refs: " + ", ".join(refs))

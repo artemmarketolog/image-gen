@@ -25,7 +25,8 @@ def config_state():
         return 'missing'
     filled = [line.split('=', 1)[0] for line in CONFIG.read_text().splitlines()
               if '=' in line and not line.lstrip().startswith('#') and line.split('=', 1)[1].strip()]
-    return 'LAOZHANG_API_KEY set' if 'LAOZHANG_API_KEY' in filled else 'present, LAOZHANG_API_KEY empty'
+    keys = [k for k in ('LAOZHANG_API_KEY', 'OPENAI_API_KEY') if k in filled]
+    return ', '.join(keys) + ' set' if keys else 'present, LAOZHANG_API_KEY and OPENAI_API_KEY empty'
 
 
 def main():
@@ -55,7 +56,7 @@ def main():
         CONFIG.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         shutil.copyfile(ROOT / '.env.example', CONFIG)
         CONFIG.chmod(0o600)
-        print(f'Created {CONFIG} (chmod 600). Put your LAOZHANG_API_KEY there.')
+        print(f'Created {CONFIG} (chmod 600). Put your LAOZHANG_API_KEY (and optionally OPENAI_API_KEY) there.')
     print(f'Ready: {py}')
     print(f'Config: {CONFIG} — {config_state()}')
     print(f'Test without paid calls: {py} -m unittest discover -s {ROOT / "tests"}')

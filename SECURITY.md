@@ -5,7 +5,7 @@ The scripts do not search another project, agent history, browser profile or sys
 Journals and caches start empty and live under the current user's data directories, outside this repository.
 They can contain full prompts, voice IDs and paths: do not upload them in bug reports.
 
-Image prompts/references go to Laozhang; speech text goes to ElevenLabs. Motion renders locally;
+Image prompts/references go to Laozhang, or to OpenAI with `--provider openai` or the automatic fallback; speech text goes to ElevenLabs. Motion renders locally;
 optional music goes to ElevenLabs and optional ASR goes to OpenAI. Each operation is explicit.
 Claude CLI preprocessing in the voice skill is optional and off by default; enabling a style sends that text to Claude.
 No telemetry or delivery bot is part of these skills. Configuring public video-reference hosting makes those frames public.

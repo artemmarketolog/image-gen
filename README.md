@@ -1,7 +1,8 @@
 # image-gen — картинки для агента через GPT Image 2.5
 
 **Скилл для Claude Code, Codex и других агентов:** генерация и правка изображений через [laozhang.ai](https://laozhang.ai)
-(GPT Image 2.5, $0.03 за картинку). Точный кириллический текст на макетах, правка по референсам, пакеты до 4 потоков,
+(GPT Image 2.5, $0.03 за картинку) или напрямую через официальный OpenAI API (по токенам, от ≈$0.011 за 9:16;
+он же — автоматический запасной путь, когда у laozhang лежат линии 2.5). Точный кириллический текст на макетах, правка по референсам, пакеты до 4 потоков,
 автосжатие, постоянный архив и личный журнал промптов. Плюс апскейл, видео из картинки (Seedance 2.0) и видеопетли для сайтов.
 
 <table>
@@ -15,7 +16,7 @@
 </table>
 
 > **English.** Agent skill (Claude Code, Codex, any agent that reads `SKILL.md`) for image generation and editing via the
-> laozhang.ai GPT Image API: exact on-image text, reference edits, safe batches, compression, a private prompt journal,
+> laozhang.ai or the official OpenAI GPT Image API (with automatic fallback to OpenAI): exact on-image text, reference edits, safe batches, compression, a private prompt journal,
 > double-billing protection, Real-ESRGAN upscale, image-to-video and seamless web loops. Docs are in Russian; agents read them fine.
 
 ## Что умеет
@@ -25,6 +26,7 @@
 | 🖼 Текст → картинка | GPT Image 2.5 по умолчанию; 10 пропорций от 21:9 до 9:16, размеры доставки 1080/1920 или 2K/4K |
 | ✍️ Точный текст | плакаты, баннеры, обложки: строки дословно, кириллица чистая |
 | 🎯 Правка по референсам | `--ref` до нескольких картинок: новый фон, цвет, элемент, тот же персонаж в серии |
+| 🔀 Два провайдера | laozhang по умолчанию, `--provider openai` — официальный API: быстрее, реальный `quality`, прозрачный фон |
 | 📦 Пакеты | `batch_generate.py`: до 4 потоков в одном процессе, отчёт со стоимостью |
 | 💾 Архив и журнал | JPEG 95 4:4:4 (−70% веса без видимой потери), уникальные папки, журнал всех запросов и промптов |
 | 🛡 Деньги под контролем | запись в журнал до отправки, ноль автоповторов после отправки, `unknown_billed` вместо повторной оплаты |
@@ -60,6 +62,15 @@ python3 setup.py                     # .venv + зависимости + ~/.confi
 LAOZHANG_API_KEY=sk-...
 ```
 
+**OpenAI (необязательно).** Для `--provider openai` и автоматического перехода при сбоях laozhang впишите туда же
+ключ с [platform.openai.com](https://platform.openai.com/api-keys) (баланс пополняется отдельно):
+
+```
+OPENAI_API_KEY=sk-...
+```
+
+Можно работать только с OpenAI: тогда запускайте с `--provider openai`.
+
 Ключ не вставляйте в чат с агентом — только в этот файл. Проверка: `python3 setup.py --check`.
 
 ## Как пользоваться
@@ -74,6 +85,7 @@ LAOZHANG_API_KEY=sk-...
 PY=.venv/bin/python
 $PY generate.py --prompt "Premium ceramic cup, warm cream background, editorial" --ratio 1:1 --name cup
 $PY generate.py --prompt "Replace the background with deep navy" --ref /abs/cup.jpg --name cup-navy
+$PY generate.py --provider openai --quality high --prompt "Portrait of a barista, natural light" --ratio 9:16 --name barista
 $PY batch_generate.py --jobs examples/jobs.jsonl --project acme/2026-10-02-launch
 $PY compress.py --input /abs/photo.png                  # сжать и заархивировать готовый файл
 $PY upscale.py --input in.png --output out.png --size 2160x3840
@@ -92,7 +104,7 @@ $PY upscale.py --input in.png --output out.png --size 2160x3840
 | Рабочие копии | `~/.cache/image-gen/` |
 
 Журнал у каждого пользователя начинается пустым и в репозиторий не попадает (`.gitignore`). Промпты и референсы
-уходят только в laozhang.ai — никакой телеметрии. Подробно: [SECURITY.md](SECURITY.md).
+уходят только в выбранный провайдер (laozhang.ai или OpenAI) — никакой телеметрии. Подробно: [SECURITY.md](SECURITY.md).
 
 ## Проверка без трат
 

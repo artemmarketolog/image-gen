@@ -14,7 +14,9 @@ Zero-retry на таймаут/disconnect (unknown_billed).
 jobs.jsonl формат (одна строка = одна генерация):
   {"prompt": "...", "name": "file1", "ratio": "9:16"}
   {"prompt": "...", "name": "file2", "ratio": "9:16", "model": "gpt-image-2", "quality": "high", "project": "acme/2026-09-16-launch"}
+  {"prompt": "...", "name": "file3", "ratio": "9:16", "provider": "openai", "quality": "medium", "background": "transparent"}
 Без "model" — дефолт скилла (gpt-image-2.5). "project" пишет промпт в <data>/creatives/<project>/prompts.md.
+Без "provider" — laozhang; "openai" — официальный API по токенам (quality по умолчанию medium).
 """
 
 import argparse
@@ -30,12 +32,21 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from generate import (
-    generate_image, get_cost, normalize_model, DEFAULT_MODEL,
+    generate_image, get_cost, normalize_model, resolve_gpt_size, DEFAULT_MODEL, DEFAULT_PROVIDER, PROVIDERS,
+    OPENAI_DEFAULT_QUALITY, ACTUAL_COSTS, NotBilledError,
     OUTPUT_DIR, REFS_DIR, LOCK_FILE,
 )
 from ledger import log_started, log_success, log_failed
 
 MAX_PARALLEL = 4  # жёсткий потолок; 3 параллельных на 2.5 проверены 10.09.2026 без 429
+# OpenAI режет по картинкам в минуту: Tier 1 — 5, Tier 2 — 20. 4 потока по ~20 с ≈ 12/мин.
+
+
+def job_cost(job: dict) -> float:
+    provider = job.get("provider") or DEFAULT_PROVIDER
+    quality = job.get("quality") or (OPENAI_DEFAULT_QUALITY if provider == "openai" else None)
+    size = resolve_gpt_size(job.get("size", "2K"), job.get("ratio", "1:1"), provider)
+    return get_cost(job.get("model"), provider, quality, len(job.get("ref") or []), size)
 
 
 def run_one_job(job: dict, batch_id: str, index: int) -> dict:
@@ -49,13 +60,17 @@ def run_one_job(job: dict, batch_id: str, index: int) -> dict:
     quality = job.get("quality")
     project = job.get("project")
     allow_no_ref_fallback = bool(job.get("allow_no_ref_fallback"))
+    provider = job.get("provider") or DEFAULT_PROVIDER
+    extra = dict(provider=provider, background=job.get("background"), moderation=job.get("moderation"))
 
     job_id = f"batch_{batch_id}_{index}_{name}"
     output_path = OUTPUT_DIR / f"{name}.png"
 
     # Гейт моделей — тот же, что в generate.py (дефолт 2.5, gpt-image-2 по явному указанию).
     try:
-        normalize_model(model)
+        if provider not in PROVIDERS:
+            raise SystemExit(f"provider {provider}: допустимо {', '.join(PROVIDERS)}")
+        normalize_model(model, provider)
     except SystemExit as e:
         print(f"  [{index + 1}] ⛔ {name} — {e}")
         return {
@@ -63,7 +78,7 @@ def run_one_job(job: dict, batch_id: str, index: int) -> dict:
             "output": None, "error": str(e), "elapsed": 0,
         }
 
-    cost = get_cost(model)
+    cost = job_cost(job)
 
     result = {
         "job_id": job_id,
@@ -75,7 +90,7 @@ def run_one_job(job: dict, batch_id: str, index: int) -> dict:
         "elapsed": 0,
     }
 
-    print(f"  [{index + 1}] Генерирую: {name} (${cost})...")
+    print(f"  [{index + 1}] Генерирую: {name} (≈${cost:.3f})...")
 
     t0 = time.time()
     try:
@@ -90,9 +105,11 @@ def run_one_job(job: dict, batch_id: str, index: int) -> dict:
             quality=quality,
             project=project,
             keep_2k=bool(job.get("keep_2k", False)),
+            **extra,
         )
         elapsed = time.time() - t0
         log_success(job_id, str(output_path), elapsed)
+        result["cost"] = ACTUAL_COSTS.get(job_id, cost)
 
         # Копия в refs
         ref_copy = REFS_DIR / output_path.name
@@ -119,9 +136,11 @@ def run_one_job(job: dict, batch_id: str, index: int) -> dict:
                     quality=quality,
                     project=project,
                     keep_2k=bool(job.get("keep_2k", False)),
+                    **extra,
                 )
                 elapsed = time.time() - t0
                 log_success(f"{job_id}_no_ref", str(output_path), elapsed)
+                result["cost"] = ACTUAL_COSTS.get(f"{job_id}_no_ref", cost)
 
                 # Копия в refs
                 ref_copy = REFS_DIR / output_path.name
@@ -139,9 +158,13 @@ def run_one_job(job: dict, batch_id: str, index: int) -> dict:
         result["elapsed"] = round(elapsed)
         result["error"] = str(e)[:200]
 
-        # Если таймаут или connection error после отправки — unknown_billed
+        # Если таймаут или connection error после отправки — unknown_billed.
+        # NotBilledError — провайдер отказал до генерации (4xx, 503, do_request_failed): не списано.
         err_type = type(e).__name__
-        if "Timeout" in err_type or ("Connection" in err_type and elapsed > 5) or ("HTTP 5" in str(e) and "do_request_failed" not in str(e)):
+        if isinstance(e, NotBilledError):
+            result["status"] = "failed"
+            print(f"  [{index + 1}] ✗ {name} — {str(e)[:120]}")
+        elif "Timeout" in err_type or ("Connection" in err_type and elapsed > 5) or "HTTP 5" in str(e):
             result["status"] = "unknown_billed"
             print(f"  [{index + 1}] ⚠️ {name} — таймаут/disconnect ({elapsed:.0f} сек), возможно тарифицирован")
         else:
@@ -159,6 +182,8 @@ def main():
     parser.add_argument("--ratio", default="1:1", help="Ratio для всех (с --prompts)")
     parser.add_argument("--model", default=DEFAULT_MODEL, help=f"Модель для всех (с --prompts), default: {DEFAULT_MODEL}")
     parser.add_argument("--quality", default=None, help="low/medium/high/xhigh/max для всех задач без своего quality")
+    parser.add_argument("--provider", default=None, choices=PROVIDERS,
+                        help="laozhang (дефолт) или openai для всех задач без своего provider")
     parser.add_argument("--project", default=None, help="Проект для всех задач без своего project (<data>/creatives/<project>/prompts.md)")
     parser.add_argument("--parallel", type=int, default=0, help=f"Параллельных воркеров (default: auto = min(jobs, {MAX_PARALLEL}), max: {MAX_PARALLEL})")
 
@@ -188,13 +213,14 @@ def main():
     for job in jobs:
         job.setdefault("quality", args.quality)
         job.setdefault("project", args.project)
+        job.setdefault("provider", args.provider)
 
     parallel = min(len(jobs), MAX_PARALLEL) if args.parallel == 0 else min(max(args.parallel, 1), MAX_PARALLEL)
     batch_id = str(int(time.time()))
-    total_cost = sum(get_cost(j.get("model")) for j in jobs)
+    total_cost = sum(job_cost(j) for j in jobs)
 
     print(f"📦 Batch: {len(jobs)} генераций, --parallel {parallel}")
-    print(f"💰 Макс. стоимость: ${total_cost:.2f}")
+    print(f"💰 Макс. стоимость: ${total_cost:.2f}" + (" (OpenAI — оценка)" if any(j.get("provider") == "openai" for j in jobs) else ""))
     print(f"🔒 Batch ID: {batch_id}")
     print()
 
@@ -229,7 +255,9 @@ def main():
             print(f"   - {r['name']}: {r['error'][:80]}")
     if failed:
         print(f"✗ Failed: {len(failed)} (не тарифицированы)")
-    print(f"💰 Потрачено (min): ${sum(r['cost'] for r in success):.2f}")
+        for r in failed:
+            print(f"   - {r['name']}: {(r['error'] or '')[:120]}")
+    print(f"💰 Потрачено (min): ${sum(r['cost'] for r in success):.3f}")
     if billed:
         print(f"💰 Потрачено (max, с unknown): ${billed_cost:.2f}")
     print()
@@ -244,7 +272,7 @@ def main():
     if billed:
         print()
         print(f"⚠️ {len(billed)} картинок не дошли, возможно оплачены.")
-        print(f"   Перегенерировать ТОЛЬКО после подтверждения пользователя (проверьте историю запросов в кабинете laozhang).")
+        print(f"   Перегенерировать ТОЛЬКО после подтверждения пользователя (проверьте историю запросов в кабинете провайдера).")
 
     if failed or billed:
         sys.exit(2)
