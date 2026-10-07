@@ -25,8 +25,16 @@ def config_state():
         return 'missing'
     filled = [line.split('=', 1)[0] for line in CONFIG.read_text().splitlines()
               if '=' in line and not line.lstrip().startswith('#') and line.split('=', 1)[1].strip()]
-    keys = [k for k in ('LAOZHANG_API_KEY', 'OPENAI_API_KEY') if k in filled]
+    keys = [k for k in ('LAOZHANG_API_KEY', 'OPENAI_API_KEY', 'IMAGE_GEN_PROVIDER') if k in filled]
     return ', '.join(keys) + ' set' if keys else 'present, LAOZHANG_API_KEY and OPENAI_API_KEY empty'
+
+
+def codex_state():
+    codex = shutil.which(os.getenv('CODEX_BIN') or 'codex')
+    if not codex:
+        return 'not installed (needed only for --provider codex)'
+    login = subprocess.run([codex, 'login', 'status'], capture_output=True, text=True)
+    return f'{codex}, ' + ('logged in' if login.returncode == 0 else 'not logged in (codex login --device-auth)')
 
 
 def main():
@@ -44,6 +52,7 @@ def main():
         for tool in ('ffmpeg', 'ffprobe'):
             print(f'{tool}: {shutil.which(tool) or "missing (needed only for video_loop.py)"}')
         print(f'config {CONFIG}: {config_state()}')
+        print(f'codex: {codex_state()}')
         return
     if not py.is_file():
         venv.EnvBuilder(with_pip=True).create(ROOT / '.venv')

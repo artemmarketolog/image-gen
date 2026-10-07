@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
 image-gen — генератор одиночных изображений.
-Провайдеры: laozhang.ai (по умолчанию, $0.03 за картинку) и официальный OpenAI
-(--provider openai, оплата по токенам). Когда у laozhang лежат все линии 2.5,
+Провайдеры: laozhang.ai (по умолчанию, $0.03 за картинку), официальный OpenAI
+(--provider openai, оплата по токенам) и Codex по подписке ChatGPT (--provider codex,
+без ключей и оплаты за картинку; по умолчанию через IMAGE_GEN_PROVIDER=codex). Когда у laozhang лежат все линии 2.5,
 запрос сам уходит в OpenAI на ту же модель 2.5 (с 03.10.2026).
 Дефолт — GPT Image 2.5 (с 2026-09-10); gpt-image-2 только по явному --model.
 Nano Banana / Gemini (Flash и Pro) НЕ использовать никогда.
@@ -14,6 +15,9 @@ Nano Banana / Gemini (Flash и Pro) НЕ использовать никогда
 
 import os
 import re
+import json
+import subprocess
+import tempfile
 import sys
 import base64
 import argparse
@@ -26,7 +30,7 @@ import requests
 
 from ledger import log_started, log_success, log_failed, log_billed, log_prompt_md
 from compress import archive_dir, save_compressed
-from skill_config import ENV_FILE, CACHE_DIR, private_dir
+from skill_config import ENV_FILE, CACHE_DIR, private_dir, setting
 
 # Ключ: окружение → канонический файл кредов. Раньше скрипт искал только
 # `.agents/config/.env`, которого нет, и каждый вызывающий подставлял ключ сам.
@@ -88,8 +92,8 @@ QUALITIES = ("low", "medium", "high", "xhigh", "max")
 
 # Официальный OpenAI: те же алиасы → настоящие имена моделей. Flare — быстрая
 # повседневная, Sunburst — точнее в правках по референсу; цена за токен одинаковая.
-PROVIDERS = ("laozhang", "openai")
-DEFAULT_PROVIDER = "laozhang"
+PROVIDERS = ("laozhang", "openai", "codex")
+DEFAULT_PROVIDER = setting("IMAGE_GEN_PROVIDER", "laozhang")
 OPENAI_MODELS = {
     "gpt-image-2.5": "gpt-image-2.5-flare",
     "gpt-image-2.5-flare": "gpt-image-2.5-flare",
@@ -119,12 +123,63 @@ OPENAI_ESTIMATE_PIXELS = 1152 * 2048
 OPENAI_REF_ESTIMATE = 0.012
 
 
+# Codex по подписке ChatGPT: официальный `codex exec` вызывает встроенный инструмент image_gen,
+# вход и обновление токена держит сам Codex (`codex login`). Картинка ложится в
+# $CODEX_HOME/generated_images/<thread_id>/. Размер выбирает модель по пропорции из промпта
+# (9:16 ≈ 941x1672, 1:1 ≈ 1254x1254); quality не управляется.
+CODEX_BIN = setting("CODEX_BIN", "codex")
+CODEX_HOME = Path(os.getenv("CODEX_HOME") or Path.home() / ".codex").expanduser()
+CODEX_TIMEOUT = 900
+
+
 class NotBilledError(RuntimeError):
     """Провайдер ответил отказом до генерации: деньги не списаны, повтор безопасен."""
 
 
+def codex_image(prompt: str, aspect_ratio: str, refs: list[str] | None = None, background: str | None = None) -> bytes:
+    """Одна картинка через `codex exec` и встроенный image_gen. Возвращает байты PNG."""
+    task = ("Call the built-in image_gen tool exactly once and do nothing else: do not read files or skills, "
+            f"do not run commands. Aspect ratio {aspect_ratio}"
+            + (", transparent background" if background == "transparent" else "")
+            + (". Use the attached images as references" if refs else "")
+            + ". Image prompt:\n\n" + prompt + "\n\nAfter the image is generated reply DONE.")
+    cmd = [CODEX_BIN, "exec", "--skip-git-repo-check", "--ephemeral", "-s", "read-only", "--json",
+           "-c", "model_reasoning_effort=low"]
+    for ref in refs or []:
+        cmd += ["-i", str(Path(ref).resolve())]
+    cmd += ["--", task]
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            proc = subprocess.run(cmd, cwd=tmp, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                                  timeout=CODEX_TIMEOUT)
+        except FileNotFoundError:
+            raise NotBilledError(f"Codex CLI не найден ({CODEX_BIN}): установить и выполнить `codex login`")
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(f"Codex не ответил за {CODEX_TIMEOUT} с")
+    thread, said = None, ""
+    for line in proc.stdout.splitlines():
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if event.get("type") == "thread.started":
+            thread = event.get("thread_id")
+        elif event.get("type") == "item.completed" and event.get("item", {}).get("type") == "agent_message":
+            said = event["item"].get("text", "")
+        elif event.get("type") in ("error", "turn.failed"):
+            said = json.dumps(event, ensure_ascii=False)
+    images = sorted((CODEX_HOME / "generated_images" / thread).glob("*.png"), key=lambda p: p.stat().st_mtime) if thread else []
+    if not images:
+        detail = (said or proc.stderr.strip()[-600:] or f"код выхода {proc.returncode}").strip()
+        hint = " — выполнить `codex login --device-auth`" if re.search(r"log ?in|auth|401", detail, re.I) else ""
+        raise NotBilledError(f"Codex не вернул картинку: {detail}{hint}")
+    return images[-1].read_bytes()
+
+
 def normalize_model(model: str, provider: str = DEFAULT_PROVIDER) -> str:
     model = (model or DEFAULT_MODEL).strip()
+    if provider == "codex":
+        return "codex-image_gen"
     table = OPENAI_MODELS if provider == "openai" else MODELS
     if model in table:
         return table[model]
@@ -210,6 +265,8 @@ def resolve_gpt_size(size: str, aspect_ratio: str, provider: str = DEFAULT_PROVI
 def get_cost(model: str = "", provider: str = DEFAULT_PROVIDER, quality: str | None = None,
              refs: int = 0, size: str | None = None) -> float:
     """Цена до отправки: у laozhang точная, у OpenAI оценка по замерам (факт считает openai_cost)."""
+    if provider == "codex":
+        return 0.0
     if provider != "openai":
         return COST
     scale = 1.0
@@ -300,6 +357,26 @@ def generate_image(
     model = normalize_model(model, provider)
     if quality and quality not in QUALITIES:
         raise SystemExit(f"--quality {quality}: допустимо {', '.join(QUALITIES)}")
+    if provider == "codex":
+        if not job_id:
+            job_id = f"single_{int(time.time())}"
+        md = dict(name=output_path.stem, prompt=prompt, model=model, size="auto", ratio=aspect_ratio,
+                  quality=None, refs=ref_images, project=project, provider=provider)
+        log_started(job_id, prompt, model, aspect_ratio, output_path.stem, 0.0, size="auto", quality=None,
+                    refs=ref_images or [], project=project, requested_model=requested_model, provider=provider)
+        t0 = time.time()
+        try:
+            img_bytes = codex_image(prompt, aspect_ratio, ref_images, background)
+        except Exception as e:
+            log_failed(job_id, str(e), billed=False)
+            log_prompt_md(**md, status="failed", error=str(e))
+            raise
+        ACTUAL_COSTS[job_id] = 0.0
+        output_path = save_compressed(img_bytes, output_path.name, project,
+                                      target=None if keep_2k else DELIVERY_SIZES.get(aspect_ratio))
+        md_path = log_prompt_md(**md, status="success", output=str(output_path), elapsed=time.time() - t0, cost=0.0)
+        print(f"  промпт записан: {md_path}")
+        return output_path
     if provider == "openai":
         if not OPENAI_API_KEY:
             raise RuntimeError(f"OPENAI_API_KEY не найден ни в окружении, ни в {OPENAI_KEY_FILES[0]}")
@@ -464,7 +541,8 @@ def main():
                         help=f"low/medium/high/xhigh/max; без флага у laozhang не передаётся, "
                              f"у OpenAI — {OPENAI_DEFAULT_QUALITY}")
     parser.add_argument("--provider", default=DEFAULT_PROVIDER, choices=PROVIDERS,
-                        help="laozhang (по умолчанию, $0.03) или openai (официальный API, по токенам)")
+                        help=f"laozhang ($0.03), openai (официальный API, по токенам) или codex "
+                             f"(подписка ChatGPT, бесплатно); по умолчанию {DEFAULT_PROVIDER} (IMAGE_GEN_PROVIDER)")
     parser.add_argument("--background", default=None, choices=("transparent", "opaque"),
                         help="transparent — PNG с альфой (OpenAI и vip-линии laozhang)")
     parser.add_argument("--moderation", default=None, choices=("auto", "low"),
@@ -505,14 +583,16 @@ def main():
     cost = get_cost(model, args.provider, quality, len(args.ref or []), gpt_size)
     job_id = f"single_{int(time.time())}_{args.name or 'img'}"
     print(f"Модель: {args.model} → {args.provider}/{model}")
-    print(f"Размер: {gpt_size} (ratio: {args.ratio})" + (f", quality: {quality}" if quality else ""))
+    print(f"Размер: {'по пропорции' if args.provider == 'codex' else gpt_size} (ratio: {args.ratio})"
+          + (f", quality: {quality}" if quality and args.provider != "codex" else ""))
 
     if args.ref:
         print(f"Референсы: {len(args.ref)} изображений")
         for r in args.ref:
             print(f"  - {r}")
 
-    print(f"Стоимость: ${cost:.3f}" + (" (оценка, факт по токенам после ответа)" if args.provider == "openai" else ""))
+    print("Стоимость: по подписке ChatGPT (Codex)" if args.provider == "codex" else
+          f"Стоимость: ${cost:.3f}" + (" (оценка, факт по токенам после ответа)" if args.provider == "openai" else ""))
     print(f"Генерирую...")
 
     t0 = time.time()

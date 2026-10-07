@@ -3,7 +3,7 @@ name: image-gen
 description: |
   Генерация и редактирование изображений через laozhang.ai (GPT Image 2.5 по умолчанию, $0.03 за картинку)
   или официальный OpenAI Images API (--provider openai, по токенам: 9:16 medium ≈$0.011, high ≈$0.043);
-  когда у laozhang лежат линии 2.5, запрос сам уходит в OpenAI:
+  когда у laozhang лежат линии 2.5, запрос сам уходит в OpenAI; без ключей — Codex по подписке ChatGPT (--provider codex):
   текст → картинка, правка по референсам (--ref), пакеты до 4 потоков, точный кириллический текст на макетах,
   автоматическое сжатие (JPEG 95 4:4:4), постоянное хранение, журнал всех запросов и промптов, защита от двойной оплаты.
   Плюс апскейл Real-ESRGAN, видео из картинки (Seedance 2.0, Wan 2.7) и бесшовные видеопетли для сайтов (AV1 + H.264).
@@ -17,6 +17,7 @@ description: |
 Генерирует и редактирует изображения через API [laozhang.ai](https://laozhang.ai) — шлюз к моделям GPT Image —
 или напрямую через официальный OpenAI Images API (раздел «Провайдеры»).
 Всё, что нужно от пользователя: ключ `LAOZHANG_API_KEY` и/или `OPENAI_API_KEY` в `~/.config/media-skills/image-gen.env`
+либо вход Codex по подписке ChatGPT (`codex login`, провайдер `codex`)
 (установка и ключи: [README.md](README.md)). Видео из картинки и петли для сайта — раздел
 «Видео из картинки» в конце и [references/video.md](references/video.md).
 
@@ -29,6 +30,8 @@ description: |
 
 **Провайдеры:** laozhang по умолчанию; официальный OpenAI — флагом `--provider openai` и автоматически, когда
 у laozhang недоступны линии 2.5 (если задан `OPENAI_API_KEY`). Подробно: раздел «Провайдеры: laozhang и OpenAI».
+Codex по подписке ChatGPT — `--provider codex` (раздел «Провайдер codex»). Провайдер по умолчанию задаёт
+`IMAGE_GEN_PROVIDER` в `image-gen.env`; если там `codex`, все команды ниже без `--provider` идут через Codex.
 
 > **⛔ Параллельность и деньги**
 > 1. Запускать несколько `generate.py` одновременно нельзя: скрипт держит file-lock и второй процесс ждёт/падает.
@@ -238,7 +241,8 @@ Tier 2 — 20): на Tier 1 ставьте `--parallel 1`. В конце — о�
 
 ### --provider
 
-`laozhang` (по умолчанию) или `openai`. В пакете — поле `"provider"` у задачи или `--provider` на всю пачку.
+`laozhang` (по умолчанию), `openai` или `codex`. В пакете — поле `"provider"` у задачи или `--provider` на всю пачку.
+Без флага берётся `IMAGE_GEN_PROVIDER` из `image-gen.env`.
 
 ### --background
 
@@ -360,6 +364,21 @@ Tier 2 — 20): на Tier 1 ставьте `--parallel 1`. В конце — о�
 - `--quality high` руками для фотореалистичных людей и лиц: на medium кожа глянцевая, на high живая текстура;
 - `xhigh`/`max` — только для одиночных героев крупным планом;
 - вырезанные объекты — `--provider openai --background transparent`.
+
+## Провайдер codex (подписка ChatGPT)
+
+`generate.py --provider codex` запускает официальный `codex exec`, который вызывает встроенный инструмент `image_gen`
+(GPT Image) в счёт подписки ChatGPT: ни ключей, ни оплаты за картинку. Вход держит сам Codex (`codex login`,
+на сервере `codex login --device-auth`); скрипт токены не читает.
+
+- `--ref` работает (до 5 картинок): референсы прикладываются к запросу Codex как изображения.
+- `--ratio` передаётся словами в промпт; размер выбирает модель (9:16 ≈ 941x1672, 1:1 ≈ 1254x1254, 4:5 ≈ 1122x1402).
+  Нужен 2K и больше — потом `upscale.py`.
+- `--quality`, `--size`, `--moderation` не действуют. `--background transparent` передаётся просьбой в промпт.
+- 30–60 с на картинку. Пакет `batch_generate.py` с `"provider": "codex"` идёт так же, до 4 потоков; лимиты общие
+  с подпиской Codex, при исчерпании Codex вернёт ошибку (`NotBilledError`, ничего не списано).
+- Ошибка «Codex не вернул картинку … codex login» — вход протух: пользователю выполнить `codex login --device-auth`.
+- Журнал и промпты пишутся как у остальных провайдеров, цена `$0.000`.
 
 ---
 

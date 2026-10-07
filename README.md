@@ -71,6 +71,17 @@ OPENAI_API_KEY=sk-...
 
 Можно работать только с OpenAI: тогда запускайте с `--provider openai`.
 
+**Без ключей, по подписке ChatGPT (Codex).** Если на машине стоит [Codex CLI](https://github.com/openai/codex)
+и выполнен `codex login` (на сервере `codex login --device-auth`), картинки рисует встроенный инструмент Codex
+`image_gen` в счёт подписки ChatGPT: `--provider codex`. Сделать его провайдером по умолчанию:
+
+```
+IMAGE_GEN_PROVIDER=codex
+```
+
+Ограничения: размер выбирает модель по пропорции (9:16 ≈ 941x1672, 1:1 ≈ 1254x1254), `--quality` не управляется,
+картинка 30–60 с, лимиты — общие с подпиской Codex. Видео (Seedance/Wan) по-прежнему через laozhang.
+
 Ключ не вставляйте в чат с агентом — только в этот файл. Проверка: `python3 setup.py --check`.
 
 ## Как пользоваться
